@@ -5,10 +5,10 @@
 # - storageClassName ajustado a standard para Minikube.
 # - Recursos y storage reducidos para laboratorio local.
 ---
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: citus-demo
+# apiVersion: v1
+# kind: Namespace
+# metadata:
+#   name: citus-demo
 ---
 apiVersion: v1
 kind: ServiceAccount
