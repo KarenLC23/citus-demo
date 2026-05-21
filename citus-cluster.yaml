@@ -1,0 +1,935 @@
+# Manifiesto local ajustado para Minikube + OpenBao
+# - No incluye password plano.
+# - El Secret citusv2-prueba-secret lo crea el Job sync-citus-secret-from-openbao leyendo OpenBao.
+# - Imagen privada reemplazada por citusdata/citus:14.0.0.
+# - storageClassName ajustado a standard para Minikube.
+# - Recursos y storage reducidos para laboratorio local.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: citus-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipeline
+  namespace: citus-demo
+  labels:
+    app.kubernetes.io/part-of: citusv2-prueba
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: citus-secret-sync-sa
+  namespace: citus-demo
+  labels:
+    app.kubernetes.io/part-of: citusv2-prueba
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: citus-secret-sync-role
+  namespace: citus-demo
+  labels:
+    app.kubernetes.io/part-of: citusv2-prueba
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
+  - update
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: citus-secret-sync-rolebinding
+  namespace: citus-demo
+  labels:
+    app.kubernetes.io/part-of: citusv2-prueba
+subjects:
+- kind: ServiceAccount
+  name: citus-secret-sync-sa
+  namespace: citus-demo
+roleRef:
+  kind: Role
+  name: citus-secret-sync-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sync-citus-secret-from-openbao
+  namespace: citus-demo
+  labels:
+    application: citusv2-prueba
+    app.kubernetes.io/part-of: citusv2-prueba
+  annotations:
+    argocd.argoproj.io/sync-wave: '1'
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        application: citusv2-prueba
+        job-name: sync-citus-secret-from-openbao
+    spec:
+      serviceAccountName: citus-secret-sync-sa
+      restartPolicy: Never
+      initContainers:
+      - name: read-from-openbao
+        image: quay.io/openbao/openbao:2.5.4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: BAO_ADDR
+          value: http://openbao.openbao.svc.cluster.local:8200
+        command:
+        - sh
+        - -c
+        - 'set -e
+
+
+          echo "[openbao] Leyendo JWT del ServiceAccount..."
+
+          JWT="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+
+
+          echo "[openbao] Login con Kubernetes Auth..."
+
+          BAO_TOKEN="$(bao write -field=token auth/kubernetes/login role=citus-demo-role
+          jwt="$JWT")"
+
+          export BAO_TOKEN
+
+
+          echo "[openbao] Leyendo secretos de Citus..."
+
+          bao kv get -field=POSTGRES_USER secret/apps/citus/dev > /work/POSTGRES_USER
+
+          bao kv get -field=POSTGRES_PASSWORD secret/apps/citus/dev > /work/POSTGRES_PASSWORD
+
+          bao kv get -field=POSTGRES_DB secret/apps/citus/dev > /work/POSTGRES_DB
+
+
+          echo "[openbao] Secretos leídos correctamente."
+
+          '
+        volumeMounts:
+        - name: workdir
+          mountPath: /work
+      containers:
+      - name: create-kubernetes-secret
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - "set -e\n\necho \"[k8s] Creando/actualizando Secret citusv2-prueba-secret...\"\
+          \nkubectl create secret generic citusv2-prueba-secret \\\n  --from-file=POSTGRES_USER=/work/POSTGRES_USER\
+          \ \\\n  --from-file=POSTGRES_PASSWORD=/work/POSTGRES_PASSWORD \\\n  --from-file=POSTGRES_DB=/work/POSTGRES_DB\
+          \ \\\n  -n citus-demo \\\n  --dry-run=client -o yaml | kubectl apply -f\
+          \ -\n\necho \"[k8s] Secret citusv2-prueba-secret creado/actualizado.\"\n"
+        volumeMounts:
+        - name: workdir
+          mountPath: /work
+      volumes:
+      - name: workdir
+        emptyDir:
+          medium: Memory
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: citusv2-prueba-config
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+data:
+  shared_preload_libraries: citus,pg_stat_statements
+  max_connections: '100'
+  max_locks_per_transaction: '512'
+  shared_buffers: 256MB
+  work_mem: 4MB
+  maintenance_work_mem: 64MB
+  effective_cache_size: 512MB
+  effective_io_concurrency: '2'
+  random_page_cost: '4'
+  max_wal_size: 1GB
+  min_wal_size: 80MB
+  pg_hba_conf: '# TYPE  DATABASE  USER  ADDRESS       METHOD
+
+    local   all       all                 trust
+
+    host    all       all   0.0.0.0/0     md5
+
+    host    replication all 0.0.0.0/0     md5
+
+    '
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: citusv2-prueba-init
+  labels:
+    application: citusv2-prueba
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+data:
+  001-init-citus.sh: "#!/bin/bash\nset -e\n\n# Compatibilidade OpenShift — UID aleatorio\n\
+    if [[ $UID -ge 10000 ]]; then\n    GID=$(id -g)\n    sed -e \"s/^postgres:x:[^:]*:[^:]*:/postgres:x:$UID:$GID:/\"\
+    \ /etc/passwd > /tmp/passwd\n    cat /tmp/passwd > /etc/passwd\n    rm /tmp/passwd\n\
+    fi\n\n# Criar extensao Citus e extensoes uteis\npsql -v ON_ERROR_STOP=1 --username\
+    \ \"$POSTGRES_USER\" --dbname \"$POSTGRES_DB\" <<-EOSQL\n    CREATE EXTENSION\
+    \ IF NOT EXISTS citus;\n    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;\n\
+    \    CREATE EXTENSION IF NOT EXISTS pgcrypto;\nEOSQL\n\necho \"[init] Citus e\
+    \ extensoes criadas com sucesso no banco $POSTGRES_DB\"\n"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citusv2-prueba-coordinator
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: coordinator
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+spec:
+  ports:
+  - port: 5432
+    protocol: TCP
+    targetPort: 5432
+    name: postgresql
+  selector:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: coordinator
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citusv2-prueba-worker-1
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '1'
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+spec:
+  ports:
+  - port: 5432
+    protocol: TCP
+    targetPort: 5432
+    name: postgresql
+  selector:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '1'
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: citusv2-prueba-worker-2
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '2'
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+spec:
+  ports:
+  - port: 5432
+    protocol: TCP
+    targetPort: 5432
+    name: postgresql
+  selector:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '2'
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: citusv2-prueba-coordinator
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: coordinator
+    app.kubernetes.io/part-of: citusv2-prueba
+    app.openshift.io/runtime: postgresql
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 5
+  serviceName: citusv2-prueba-coordinator
+  selector:
+    matchLabels:
+      application: citusv2-prueba
+      cluster-name: citusv2-prueba-cluster
+      citus-role: coordinator
+  template:
+    metadata:
+      labels:
+        application: citusv2-prueba
+        cluster-name: citusv2-prueba-cluster
+        citus-role: coordinator
+    spec:
+      serviceAccountName: pipeline
+      initContainers:
+      - name: fix-perms
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-coordinator-pgdata
+      containers:
+      - name: citusv2-prueba-coordinator
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        ports:
+        - containerPort: 5432
+          protocol: TCP
+          name: postgresql
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: md5
+        - name: POSTGRES_INITDB_ARGS
+          value: --auth-host=md5 --auth-local=trust --encoding=UTF8 --locale=en_US.UTF-8
+            --data-checksums
+        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_preload_libraries
+        - name: SHARED_BUFFERS
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_buffers
+        - name: WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: work_mem
+        - name: MAINTENANCE_WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: maintenance_work_mem
+        - name: EFFECTIVE_CACHE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_cache_size
+        - name: EFFECTIVE_IO_CONCURRENCY
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_io_concurrency
+        - name: RANDOM_PAGE_COST
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: random_page_cost
+        - name: MAX_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: max_wal_size
+        - name: MIN_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: min_wal_size
+        args:
+        - -c
+        - shared_buffers=$(SHARED_BUFFERS)
+        - -c
+        - work_mem=$(WORK_MEM)
+        - -c
+        - maintenance_work_mem=$(MAINTENANCE_WORK_MEM)
+        - -c
+        - effective_cache_size=$(EFFECTIVE_CACHE_SIZE)
+        - -c
+        - effective_io_concurrency=$(EFFECTIVE_IO_CONCURRENCY)
+        - -c
+        - random_page_cost=$(RANDOM_PAGE_COST)
+        - -c
+        - max_wal_size=$(MAX_WAL_SIZE)
+        - -c
+        - min_wal_size=$(MIN_WAL_SIZE)
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-coordinator-pgdata
+        - mountPath: /docker-entrypoint-initdb.d
+          name: init-scripts
+      volumes:
+      - name: init-scripts
+        configMap:
+          name: citusv2-prueba-init
+          defaultMode: 493
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: citusv2-prueba-coordinator-pgdata
+      labels:
+        application: citusv2-prueba
+        citus-role: coordinator
+    spec:
+      storageClassName: standard
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+  updateStrategy:
+    type: RollingUpdate
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: citusv2-prueba-worker-1
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '1'
+    app.kubernetes.io/part-of: citusv2-prueba
+    app.openshift.io/runtime: postgresql
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 5
+  serviceName: citusv2-prueba-worker-1
+  selector:
+    matchLabels:
+      application: citusv2-prueba
+      cluster-name: citusv2-prueba-cluster
+      citus-role: worker
+      citus-group: '1'
+  template:
+    metadata:
+      labels:
+        application: citusv2-prueba
+        cluster-name: citusv2-prueba-cluster
+        citus-role: worker
+        citus-group: '1'
+    spec:
+      serviceAccountName: pipeline
+      initContainers:
+      - name: fix-perms
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-worker-1-pgdata
+      containers:
+      - name: citusv2-prueba-worker-1
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        ports:
+        - containerPort: 5432
+          protocol: TCP
+          name: postgresql
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: md5
+        - name: POSTGRES_INITDB_ARGS
+          value: --auth-host=md5 --auth-local=trust --encoding=UTF8 --locale=en_US.UTF-8
+            --data-checksums
+        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_preload_libraries
+        - name: SHARED_BUFFERS
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_buffers
+        - name: WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: work_mem
+        - name: MAINTENANCE_WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: maintenance_work_mem
+        - name: EFFECTIVE_CACHE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_cache_size
+        - name: EFFECTIVE_IO_CONCURRENCY
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_io_concurrency
+        - name: RANDOM_PAGE_COST
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: random_page_cost
+        - name: MAX_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: max_wal_size
+        - name: MIN_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: min_wal_size
+        args:
+        - -c
+        - shared_buffers=$(SHARED_BUFFERS)
+        - -c
+        - work_mem=$(WORK_MEM)
+        - -c
+        - maintenance_work_mem=$(MAINTENANCE_WORK_MEM)
+        - -c
+        - effective_cache_size=$(EFFECTIVE_CACHE_SIZE)
+        - -c
+        - effective_io_concurrency=$(EFFECTIVE_IO_CONCURRENCY)
+        - -c
+        - random_page_cost=$(RANDOM_PAGE_COST)
+        - -c
+        - max_wal_size=$(MAX_WAL_SIZE)
+        - -c
+        - min_wal_size=$(MIN_WAL_SIZE)
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-worker-1-pgdata
+        - mountPath: /docker-entrypoint-initdb.d
+          name: init-scripts
+      volumes:
+      - name: init-scripts
+        configMap:
+          name: citusv2-prueba-init
+          defaultMode: 493
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: citusv2-prueba-worker-1-pgdata
+      labels:
+        application: citusv2-prueba
+        citus-role: worker
+        citus-group: '1'
+    spec:
+      storageClassName: standard
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+  updateStrategy:
+    type: RollingUpdate
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: citusv2-prueba-worker-2
+  labels:
+    application: citusv2-prueba
+    cluster-name: citusv2-prueba-cluster
+    citus-role: worker
+    citus-group: '2'
+    app.kubernetes.io/part-of: citusv2-prueba
+    app.openshift.io/runtime: postgresql
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+spec:
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 5
+  serviceName: citusv2-prueba-worker-2
+  selector:
+    matchLabels:
+      application: citusv2-prueba
+      cluster-name: citusv2-prueba-cluster
+      citus-role: worker
+      citus-group: '2'
+  template:
+    metadata:
+      labels:
+        application: citusv2-prueba
+        cluster-name: citusv2-prueba-cluster
+        citus-role: worker
+        citus-group: '2'
+    spec:
+      serviceAccountName: pipeline
+      initContainers:
+      - name: fix-perms
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-worker-2-pgdata
+      containers:
+      - name: citusv2-prueba-worker-2
+        image: citusdata/citus:14.0.0
+        imagePullPolicy: IfNotPresent
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        ports:
+        - containerPort: 5432
+          protocol: TCP
+          name: postgresql
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - citus
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_HOST_AUTH_METHOD
+          value: md5
+        - name: POSTGRES_INITDB_ARGS
+          value: --auth-host=md5 --auth-local=trust --encoding=UTF8 --locale=en_US.UTF-8
+            --data-checksums
+        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_preload_libraries
+        - name: SHARED_BUFFERS
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_buffers
+        - name: WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: work_mem
+        - name: MAINTENANCE_WORK_MEM
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: maintenance_work_mem
+        - name: EFFECTIVE_CACHE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_cache_size
+        - name: EFFECTIVE_IO_CONCURRENCY
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: effective_io_concurrency
+        - name: RANDOM_PAGE_COST
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: random_page_cost
+        - name: MAX_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: max_wal_size
+        - name: MIN_WAL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: min_wal_size
+        args:
+        - -c
+        - shared_buffers=$(SHARED_BUFFERS)
+        - -c
+        - work_mem=$(WORK_MEM)
+        - -c
+        - maintenance_work_mem=$(MAINTENANCE_WORK_MEM)
+        - -c
+        - effective_cache_size=$(EFFECTIVE_CACHE_SIZE)
+        - -c
+        - effective_io_concurrency=$(EFFECTIVE_IO_CONCURRENCY)
+        - -c
+        - random_page_cost=$(RANDOM_PAGE_COST)
+        - -c
+        - max_wal_size=$(MAX_WAL_SIZE)
+        - -c
+        - min_wal_size=$(MIN_WAL_SIZE)
+        volumeMounts:
+        - mountPath: /var/lib/postgresql
+          name: citusv2-prueba-worker-2-pgdata
+        - mountPath: /docker-entrypoint-initdb.d
+          name: init-scripts
+      volumes:
+      - name: init-scripts
+        configMap:
+          name: citusv2-prueba-init
+          defaultMode: 493
+      terminationGracePeriodSeconds: 30
+  volumeClaimTemplates:
+  - metadata:
+      name: citusv2-prueba-worker-2-pgdata
+      labels:
+        application: citusv2-prueba
+        citus-role: worker
+        citus-group: '2'
+    spec:
+      storageClassName: standard
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 1Gi
+  updateStrategy:
+    type: RollingUpdate
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: citusv2-prueba-init-cluster
+  labels:
+    application: citusv2-prueba
+    app.kubernetes.io/part-of: citusv2-prueba
+  namespace: citus-demo
+  annotations:
+    argocd.argoproj.io/sync-wave: '4'
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        application: citusv2-prueba
+        job-name: citusv2-prueba-init-cluster
+    spec:
+      serviceAccountName: pipeline
+      restartPolicy: OnFailure
+      initContainers:
+      - name: wait-coordinator
+        image: citusdata/citus:14.0.0
+        command:
+        - sh
+        - -c
+        - "echo \"[wait] Aguardando coordinator ficar pronto...\"\nuntil pg_isready\
+          \ -h citusv2-prueba-coordinator -p 5432 -U postgres; do\n  echo \"[wait]\
+          \ Coordinator nao esta pronto, tentando novamente em 5s...\"\n  sleep 5\n\
+          done\necho \"[wait] Coordinator pronto!\"\n\necho \"[wait] Aguardando worker-1\
+          \ ficar pronto...\"\nuntil pg_isready -h citusv2-prueba-worker-1 -p 5432\
+          \ -U postgres; do\n  echo \"[wait] Worker-1 nao esta pronto, tentando novamente\
+          \ em 5s...\"\n  sleep 5\ndone\necho \"[wait] Worker-1 pronto!\"\n\necho\
+          \ \"[wait] Aguardando worker-2 ficar pronto...\"\nuntil pg_isready -h citusv2-prueba-worker-2\
+          \ -p 5432 -U postgres; do\n  echo \"[wait] Worker-2 nao esta pronto, tentando\
+          \ novamente em 5s...\"\n  sleep 5\ndone\necho \"[wait] Worker-2 pronto!\"\
+          \n\n# Aguardar 15s extras para os entrypoints configurarem pg_hba.conf e\
+          \ citus.node_conninfo\necho \"[wait] Aguardando 15s para entrypoints finalizarem\
+          \ configuracao...\"\nsleep 15\necho \"[wait] Todos os nos prontos para configuracao\
+          \ do cluster!\"\n"
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+      containers:
+      - name: init-cluster
+        image: citusdata/citus:14.0.0
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+        command:
+        - sh
+        - -c
+        - "echo \"=============================================\"\necho \"[init] Configurando\
+          \ cluster Citus v2 prueba\"\necho \"=============================================\"\
+          \n\n# Registrar o coordinator\necho \"[init] Registrando coordinator...\"\
+          \npsql -h citusv2-prueba-coordinator -U postgres -d citus -c \\\n  \"SELECT\
+          \ citus_set_coordinator_host('citusv2-prueba-coordinator', 5432);\"\n\n\
+          # Registrar workers\necho \"[init] Registrando worker-1...\"\npsql -h citusv2-prueba-coordinator\
+          \ -U postgres -d citus -c \\\n  \"SELECT * FROM citus_add_node('citusv2-prueba-worker-1',\
+          \ 5432);\"\n\necho \"[init] Registrando worker-2...\"\npsql -h citusv2-prueba-coordinator\
+          \ -U postgres -d citus -c \\\n  \"SELECT * FROM citus_add_node('citusv2-prueba-worker-2',\
+          \ 5432);\"\n\n# Verificar cluster\necho \"\"\necho \"[init] Workers ativos\
+          \ no cluster:\"\npsql -h citusv2-prueba-coordinator -U postgres -d citus\
+          \ -c \\\n  \"SELECT * FROM citus_get_active_worker_nodes();\"\n\necho \"\
+          \"\necho \"[init] Versao do Citus:\"\npsql -h citusv2-prueba-coordinator\
+          \ -U postgres -d citus -c \\\n  \"SELECT citus_version();\"\n\necho \"\"\
+          \necho \"=============================================\"\necho \"[init]\
+          \ Cluster Citus v2 prueba configurado!\"\necho \"=============================================\"\
+          \n"
