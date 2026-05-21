@@ -5,10 +5,10 @@
 # - storageClassName ajustado a standard para Minikube.
 # - Recursos y storage reducidos para laboratorio local.
 ---
-# apiVersion: v1
-# kind: Namespace
-# metadata:
-#   name: citus-demo
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: citus-demo
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -304,12 +304,17 @@ spec:
       serviceAccountName: pipeline
       initContainers:
       - name: fix-perms
-        image: citusdata/citus:14.0.0
+        image: busybox:1.36
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
         command:
         - sh
         - -c
-        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        - |
+          mkdir -p /var/lib/postgresql/data
+          chown -R 999:999 /var/lib/postgresql
+          chmod -R 0770 /var/lib/postgresql
         volumeMounts:
         - mountPath: /var/lib/postgresql
           name: citusv2-prueba-coordinator-pgdata
@@ -500,15 +505,20 @@ spec:
       serviceAccountName: pipeline
       initContainers:
       - name: fix-perms
-        image: citusdata/citus:14.0.0
+        image: busybox:1.36
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
         command:
         - sh
         - -c
-        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        - |
+          mkdir -p /var/lib/postgresql/data
+          chown -R 999:999 /var/lib/postgresql
+          chmod -R 0770 /var/lib/postgresql
         volumeMounts:
         - mountPath: /var/lib/postgresql
-          name: citusv2-prueba-worker-1-pgdata
+          name: citusv2-prueba-coordinator-pgdata
       containers:
       - name: citusv2-prueba-worker-1
         image: citusdata/citus:14.0.0
@@ -697,15 +707,20 @@ spec:
       serviceAccountName: pipeline
       initContainers:
       - name: fix-perms
-        image: citusdata/citus:14.0.0
+        image: busybox:1.36
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
         command:
         - sh
         - -c
-        - mkdir -p /var/lib/postgresql/data && chmod 0700 /var/lib/postgresql/data
+        - |
+          mkdir -p /var/lib/postgresql/data
+          chown -R 999:999 /var/lib/postgresql
+          chmod -R 0770 /var/lib/postgresql
         volumeMounts:
         - mountPath: /var/lib/postgresql
-          name: citusv2-prueba-worker-2-pgdata
+          name: citusv2-prueba-coordinator-pgdata
       containers:
       - name: citusv2-prueba-worker-2
         image: citusdata/citus:14.0.0
