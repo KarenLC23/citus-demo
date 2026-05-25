@@ -23,11 +23,18 @@ metadata:
 spec:
   provider: vault
   parameters:
-    vaultAddress: "http://vault.vault.svc:8200"
-    roleName: "citus-demo"
-    secrets: |
-      - path: "kv/data/citus"
-        type: kv
+    vaultAddress: "http://vault.vault.svc:8200"  # Dirección del servidor Vault
+    roleName: "citus-demo"  # Rol de Vault asignado a la app
+    objects: |
+      - objectName: POSTGRES_USER
+        secretPath: kv/data/citus
+        secretKey: username
+      - objectName: POSTGRES_PASSWORD
+        secretPath: kv/data/citus
+        secretKey: password
+      - objectName: POSTGRES_DB
+        secretPath: kv/data/citus
+        secretKey: database
 ---
 # ConfigMap de configuración de Citus
 apiVersion: v1
