@@ -22,9 +22,19 @@ metadata:
   namespace: citus-demo
 spec:
   provider: vault
+  secretObjects:                        # ← esto crea el Secret de K8s
+  - secretName: citus-credentials      # nombre del Secret que se creará
+    type: Opaque
+    data:
+    - objectName: POSTGRES_USER
+      key: POSTGRES_USER
+    - objectName: POSTGRES_PASSWORD
+      key: POSTGRES_PASSWORD
+    - objectName: POSTGRES_DB
+      key: POSTGRES_DB
   parameters:
-    vaultAddress: "http://vault-server.vault.svc:8200"  # Dirección del servidor Vault
-    roleName: "citus-demo"  # Rol de Vault asignado a la app
+    vaultAddress: "http://vault-server.vault.svc:8200"
+    roleName: "citus-demo"
     objects: |
       - objectName: POSTGRES_USER
         secretPath: kv/data/citus
@@ -125,50 +135,41 @@ spec:
           mountPath: /mnt/secrets
         - name: tmp-secrets
           mountPath: /tmp/secrets
-      containers:
-      - name: coordinator
-        image: citusdata/citus:14.0.0
-        securityContext:
-          runAsUser: 999
-          runAsGroup: 999
-          fsGroup: 999
-        env:
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: tmp-secrets
-              key: POSTGRES_USER
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: tmp-secrets
-              key: POSTGRES_PASSWORD
-        - name: POSTGRES_DB
-          valueFrom:
-            secretKeyRef:
-              name: tmp-secrets
-              key: POSTGRES_DB
-        - name: PGDATA
-          value: /var/lib/postgresql/data
-        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
-          valueFrom:
-            configMapKeyRef:
-              name: citusv2-prueba-config
-              key: shared_preload_libraries
-        volumeMounts:
-        - name: citusv2-prueba-coordinator-pgdata
-          mountPath: /var/lib/postgresql/data
-        - name: tmp-secrets
-          mountPath: /tmp/secrets
-      volumes:
-      - name: secrets
-        csi:
-          driver: secrets-store.csi.k8s.io
-          readOnly: true
-          volumeAttributes:
-            secretProviderClass: vault-citus-demo
-      - name: tmp-secrets
-        emptyDir: {}
+      spec:
+        serviceAccountName: pipeline
+        # Sin initContainers — ya no los necesitas
+        containers:
+        - name: coordinator
+          image: citusdata/citus:14.0.0
+          env:
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: citus-credentials      # ← el Secret que crea el CSI
+                key: POSTGRES_USER
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: citus-credentials
+                key: POSTGRES_PASSWORD
+          - name: POSTGRES_DB
+            valueFrom:
+              secretKeyRef:
+                name: citus-credentials
+                key: POSTGRES_DB
+          volumeMounts:
+          - name: citusv2-prueba-coordinator-pgdata
+            mountPath: /var/lib/postgresql/data
+          - name: secrets                     # ← el volumen CSI DEBE montarse
+            mountPath: /mnt/secrets           #   para que se cree el Secret
+            readOnly: true
+        volumes:
+        - name: secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: vault-citus-demo
   volumeClaimTemplates:
   - metadata:
       name: citusv2-prueba-coordinator-pgdata
