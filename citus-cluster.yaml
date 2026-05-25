@@ -122,13 +122,13 @@ spec:
           runAsGroup: 999
           fsGroup: 999
         env:
-        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
-          valueFrom:
-            configMapKeyRef:
-              name: citusv2-prueba-config
-              key: shared_preload_libraries
         - name: PGDATA
           value: /var/lib/postgresql/data
+        volumeMounts:
+        - name: secrets
+          mountPath: /mnt/secrets
+        - name: citusv2-prueba-coordinator-pgdata
+          mountPath: /var/lib/postgresql/data
         command: ["/bin/sh", "-c"]
         args:
         - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
