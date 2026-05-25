@@ -36,7 +36,30 @@ spec:
         secretPath: kv/data/citus
         secretKey: database
 ---
-# ConfigMap de configuración de Citus
+# ConfigMap para scripts de inicialización
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: citusv2-prueba-init
+  namespace: citus-demo
+  labels:
+    application: citusv2-prueba
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+data:
+  001-init-citus.sh: |
+    #!/bin/bash
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+      CREATE EXTENSION IF NOT EXISTS citus;
+      CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    EOSQL
+    echo "[init] Citus y extensiones creadas con éxito."
+
+---
+
+# ConfigMap para parámetros no sensibles de Citus
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -62,31 +85,10 @@ data:
     local   all       all                 trust
     host    all       all   0.0.0.0/0     md5
     host    replication all 0.0.0.0/0     md5
----
-# ConfigMap para scripts de inicialización
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: citusv2-prueba-init
-  namespace: citus-demo
-  labels:
-    application: citusv2-prueba
-  annotations:
-    argocd.argoproj.io/sync-wave: '2'
-data:
-  001-init-citus.sh: |
-    #!/bin/bash
-    set -e
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-      CREATE EXTENSION IF NOT EXISTS citus;
-      CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-      CREATE EXTENSION IF NOT EXISTS pgcrypto;
-    EOSQL
-    echo "[init] Citus y extensiones creadas con éxito."
 
 ---
 
-# StatefulSet para coordinator con volumen CSI montando secretos
+# StatefulSet para coordinator con volumen CSI montando secretos y evitando root
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -115,6 +117,10 @@ spec:
       containers:
       - name: coordinator
         image: citusdata/citus:14.0.0
+        securityContext:
+          runAsUser: 999
+          runAsGroup: 999
+          fsGroup: 999
         env:
         - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
           valueFrom:
@@ -126,7 +132,7 @@ spec:
         - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
           export POSTGRES_PASSWORD=$(cat /mnt/secrets/POSTGRES_PASSWORD) &&
           export POSTGRES_DB=$(cat /mnt/secrets/POSTGRES_DB) &&
-          exec postgres -c shared_preload_libraries=$(cat /mnt/secrets/POSTGRES_SHARED_PRELOAD_LIBRARIES)
+          exec postgres -c shared_preload_libraries=$POSTGRES_SHARED_PRELOAD_LIBRARIES
         volumeMounts:
         - name: secrets
           mountPath: /mnt/secrets
