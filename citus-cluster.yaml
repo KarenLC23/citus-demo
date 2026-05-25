@@ -23,7 +23,7 @@ metadata:
 spec:
   provider: vault
   parameters:
-    vaultAddress: "http://vault.vault.svc:8200"  # Dirección del servidor Vault
+    vaultAddress: "http://vault-server.vault.svc:8200"  # Dirección del servidor Vault
     roleName: "citus-demo"  # Rol de Vault asignado a la app
     objects: |
       - objectName: POSTGRES_USER
