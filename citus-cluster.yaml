@@ -114,6 +114,17 @@ spec:
         citus-role: coordinator
     spec:
       serviceAccountName: pipeline
+      initContainers:
+      - name: init-secrets
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+        - cp /mnt/secrets/* /tmp/secrets/
+        volumeMounts:
+        - name: secrets
+          mountPath: /mnt/secrets
+        - name: tmp-secrets
+          mountPath: /tmp/secrets
       containers:
       - name: coordinator
         image: citusdata/citus:14.0.0
@@ -122,24 +133,33 @@ spec:
           runAsGroup: 999
           fsGroup: 999
         env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: tmp-secrets
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: tmp-secrets
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: tmp-secrets
+              key: POSTGRES_DB
         - name: PGDATA
           value: /var/lib/postgresql/data
+        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_preload_libraries
         volumeMounts:
-        - name: secrets
-          mountPath: /mnt/secrets
         - name: citusv2-prueba-coordinator-pgdata
           mountPath: /var/lib/postgresql/data
-        command: ["/bin/sh", "-c"]
-        args:
-        - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
-          export POSTGRES_PASSWORD=$(cat /mnt/secrets/POSTGRES_PASSWORD) &&
-          export POSTGRES_DB=$(cat /mnt/secrets/POSTGRES_DB) &&
-          exec postgres -c shared_preload_libraries=$POSTGRES_SHARED_PRELOAD_LIBRARIES
-        volumeMounts:
-        - name: secrets
-          mountPath: /mnt/secrets
-        - name: citusv2-prueba-coordinator-pgdata
-          mountPath: /var/lib/postgresql/data
+        - name: tmp-secrets
+          mountPath: /tmp/secrets
       volumes:
       - name: secrets
         csi:
@@ -147,6 +167,8 @@ spec:
           readOnly: true
           volumeAttributes:
             secretProviderClass: vault-citus-demo
+      - name: tmp-secrets
+        emptyDir: {}
   volumeClaimTemplates:
   - metadata:
       name: citusv2-prueba-coordinator-pgdata
