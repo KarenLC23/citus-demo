@@ -124,52 +124,48 @@ spec:
         citus-role: coordinator
     spec:
       serviceAccountName: pipeline
-      initContainers:
-      - name: init-secrets
-        image: busybox
-        command: ["/bin/sh", "-c"]
-        args:
-        - cp /mnt/secrets/* /tmp/secrets/
+      containers:                                    # ← al mismo nivel que volumes
+      - name: coordinator
+        image: citusdata/citus:14.0.0
+        securityContext:
+          runAsUser: 999
+          runAsGroup: 999
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: citus-credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citus-credentials
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: citus-credentials
+              key: POSTGRES_DB
+        - name: PGDATA
+          value: /var/lib/postgresql/data
+        - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: shared_preload_libraries
         volumeMounts:
-        - name: secrets
+        - name: citusv2-prueba-coordinator-pgdata
+          mountPath: /var/lib/postgresql/data
+        - name: secrets                              # ← monta el CSI para activar secretObjects
           mountPath: /mnt/secrets
-        - name: tmp-secrets
-          mountPath: /tmp/secrets
-      spec:
-        serviceAccountName: pipeline
-        # Sin initContainers — ya no los necesitas
-        containers:
-        - name: coordinator
-          image: citusdata/citus:14.0.0
-          env:
-          - name: POSTGRES_USER
-            valueFrom:
-              secretKeyRef:
-                name: citus-credentials      # ← el Secret que crea el CSI
-                key: POSTGRES_USER
-          - name: POSTGRES_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: citus-credentials
-                key: POSTGRES_PASSWORD
-          - name: POSTGRES_DB
-            valueFrom:
-              secretKeyRef:
-                name: citus-credentials
-                key: POSTGRES_DB
-          volumeMounts:
-          - name: citusv2-prueba-coordinator-pgdata
-            mountPath: /var/lib/postgresql/data
-          - name: secrets                     # ← el volumen CSI DEBE montarse
-            mountPath: /mnt/secrets           #   para que se cree el Secret
-            readOnly: true
-        volumes:
-        - name: secrets
-          csi:
-            driver: secrets-store.csi.k8s.io
-            readOnly: true
-            volumeAttributes:
-              secretProviderClass: vault-citus-demo
+          readOnly: true
+      volumes:                                       # ← al mismo nivel que containers
+      - name: secrets
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: vault-citus-demo
   volumeClaimTemplates:
   - metadata:
       name: citusv2-prueba-coordinator-pgdata
