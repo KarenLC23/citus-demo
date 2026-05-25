@@ -83,7 +83,9 @@ data:
       CREATE EXTENSION IF NOT EXISTS pgcrypto;
     EOSQL
     echo "[init] Citus y extensiones creadas con éxito."
+
 ---
+
 # StatefulSet para coordinator con volumen CSI montando secretos
 apiVersion: apps/v1
 kind: StatefulSet
@@ -114,26 +116,17 @@ spec:
       - name: coordinator
         image: citusdata/citus:14.0.0
         env:
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: citusv2-prueba-secret
-              key: POSTGRES_USER
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: citusv2-prueba-secret
-              key: POSTGRES_PASSWORD
-        - name: POSTGRES_DB
-          valueFrom:
-            secretKeyRef:
-              name: citusv2-prueba-secret
-              key: POSTGRES_DB
         - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
           valueFrom:
             configMapKeyRef:
               name: citusv2-prueba-config
               key: shared_preload_libraries
+        command: ["/bin/sh", "-c"]
+        args:
+        - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
+          export POSTGRES_PASSWORD=$(cat /mnt/secrets/POSTGRES_PASSWORD) &&
+          export POSTGRES_DB=$(cat /mnt/secrets/POSTGRES_DB) &&
+          exec postgres -c shared_preload_libraries=$(cat /mnt/secrets/POSTGRES_SHARED_PRELOAD_LIBRARIES)
         volumeMounts:
         - name: secrets
           mountPath: /mnt/secrets
