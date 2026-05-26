@@ -122,21 +122,6 @@ spec:
           runAsGroup: 999
           fsGroup: 999
         env:
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: vault-citus-demo
-              key: POSTGRES_USER
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: vault-citus-demo
-              key: POSTGRES_PASSWORD
-        - name: POSTGRES_DB
-          valueFrom:
-            secretKeyRef:
-              name: vault-citus-demo
-              key: POSTGRES_DB
         - name: PGDATA
           value: /var/lib/postgresql/data
         - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
@@ -144,6 +129,12 @@ spec:
             configMapKeyRef:
               name: citusv2-prueba-config
               key: shared_preload_libraries
+        command: ["/bin/sh", "-c"]
+        args:
+        - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
+          export POSTGRES_PASSWORD=$(cat /mnt/secrets/POSTGRES_PASSWORD) &&
+          export POSTGRES_DB=$(cat /mnt/secrets/POSTGRES_DB) &&
+          exec postgres -c shared_preload_libraries=$POSTGRES_SHARED_PRELOAD_LIBRARIES
         volumeMounts:
         - name: secrets
           mountPath: /mnt/secrets
