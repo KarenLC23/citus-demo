@@ -62,6 +62,19 @@ spec:
         citus-role: coordinator
     spec:
       serviceAccountName: pipeline
+      initContainers:
+      - name: init-pgdata
+        image: busybox
+        command: ["/bin/sh", "-c"]
+        args:
+        - mkdir -p /var/lib/postgresql/data && \
+          chown -R 999:999 /var/lib/postgresql/data && \
+          echo "PGDATA initialized"
+        securityContext:
+          runAsUser: 0
+        volumeMounts:
+        - name: citusv2-prueba-coordinator-pgdata
+          mountPath: /var/lib/postgresql/data
       containers:
       - name: coordinator
         image: citusdata/citus:14.0.0
@@ -72,6 +85,21 @@ spec:
         env:
         - name: PGDATA
           value: /var/lib/postgresql/data
+        - name: POSTGRES_USER
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: placeholder
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: placeholder
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: citusv2-prueba-config
+              key: placeholder
         - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
           valueFrom:
             configMapKeyRef:
