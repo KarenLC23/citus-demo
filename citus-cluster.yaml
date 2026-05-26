@@ -37,58 +37,6 @@ spec:
         secretKey: database
 ---
 # ConfigMap para scripts de inicialización
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: citusv2-prueba-init
-  namespace: citus-demo
-  labels:
-    application: citusv2-prueba
-  annotations:
-    argocd.argoproj.io/sync-wave: '2'
-data:
-  001-init-citus.sh: |
-    #!/bin/bash
-    set -e
-    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-      CREATE EXTENSION IF NOT EXISTS citus;
-      CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-      CREATE EXTENSION IF NOT EXISTS pgcrypto;
-    EOSQL
-    echo "[init] Citus y extensiones creadas con éxito."
-
----
-
-# ConfigMap para parámetros no sensibles de Citus
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: citusv2-prueba-config
-  namespace: citus-demo
-  labels:
-    application: citusv2-prueba
-  annotations:
-    argocd.argoproj.io/sync-wave: '2'
-data:
-  shared_preload_libraries: citus,pg_stat_statements
-  max_connections: '100'
-  max_locks_per_transaction: '512'
-  shared_buffers: 256MB
-  work_mem: 4MB
-  maintenance_work_mem: 64MB
-  effective_cache_size: 512MB
-  effective_io_concurrency: '2'
-  random_page_cost: '4'
-  max_wal_size: 1GB
-  min_wal_size: 80MB
-  pg_hba_conf: |
-    local   all       all                 trust
-    host    all       all   0.0.0.0/0     md5
-    host    replication all 0.0.0.0/0     md5
-
----
-
-# StatefulSet para coordinator con volumen CSI montando secretos y evitando root
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -122,6 +70,21 @@ spec:
           runAsGroup: 999
           fsGroup: 999
         env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: citusv2-prueba-secret
+              key: POSTGRES_DB
         - name: PGDATA
           value: /var/lib/postgresql/data
         - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
@@ -129,12 +92,6 @@ spec:
             configMapKeyRef:
               name: citusv2-prueba-config
               key: shared_preload_libraries
-        command: ["/bin/sh", "-c"]
-        args:
-        - export POSTGRES_USER=$(cat /mnt/secrets/POSTGRES_USER) &&
-          export POSTGRES_PASSWORD=$(cat /mnt/secrets/POSTGRES_PASSWORD) &&
-          export POSTGRES_DB=$(cat /mnt/secrets/POSTGRES_DB) &&
-          exec postgres -c shared_preload_libraries=$POSTGRES_SHARED_PRELOAD_LIBRARIES
         volumeMounts:
         - name: secrets
           mountPath: /mnt/secrets
