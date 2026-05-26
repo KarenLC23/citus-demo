@@ -22,19 +22,9 @@ metadata:
   namespace: citus-demo
 spec:
   provider: vault
-  secretObjects:                        # ← esto crea el Secret de K8s
-  - secretName: citus-credentials      # nombre del Secret que se creará
-    type: Opaque
-    data:
-    - objectName: POSTGRES_USER
-      key: POSTGRES_USER
-    - objectName: POSTGRES_PASSWORD
-      key: POSTGRES_PASSWORD
-    - objectName: POSTGRES_DB
-      key: POSTGRES_DB
   parameters:
-    vaultAddress: "http://vault-server.vault.svc:8200"
-    roleName: "citus-demo"
+    vaultAddress: "http://vault-server.vault.svc:8200"  # Dirección del servidor Vault
+    roleName: "citus-demo"  # Rol de Vault asignado a la app
     objects: |
       - objectName: POSTGRES_USER
         secretPath: kv/data/citus
@@ -124,27 +114,28 @@ spec:
         citus-role: coordinator
     spec:
       serviceAccountName: pipeline
-      containers:                                    # ← al mismo nivel que volumes
+      containers:
       - name: coordinator
         image: citusdata/citus:14.0.0
         securityContext:
           runAsUser: 999
           runAsGroup: 999
+          fsGroup: 999
         env:
         - name: POSTGRES_USER
           valueFrom:
             secretKeyRef:
-              name: citus-credentials
+              name: vault-citus-demo
               key: POSTGRES_USER
         - name: POSTGRES_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: citus-credentials
+              name: vault-citus-demo
               key: POSTGRES_PASSWORD
         - name: POSTGRES_DB
           valueFrom:
             secretKeyRef:
-              name: citus-credentials
+              name: vault-citus-demo
               key: POSTGRES_DB
         - name: PGDATA
           value: /var/lib/postgresql/data
@@ -154,12 +145,11 @@ spec:
               name: citusv2-prueba-config
               key: shared_preload_libraries
         volumeMounts:
+        - name: secrets
+          mountPath: /mnt/secrets
         - name: citusv2-prueba-coordinator-pgdata
           mountPath: /var/lib/postgresql/data
-        - name: secrets                              # ← monta el CSI para activar secretObjects
-          mountPath: /mnt/secrets
-          readOnly: true
-      volumes:                                       # ← al mismo nivel que containers
+      volumes:
       - name: secrets
         csi:
           driver: secrets-store.csi.k8s.io
